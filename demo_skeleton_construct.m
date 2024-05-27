@@ -1,7 +1,7 @@
 clear all;
 close all;
 
-path_data=['../data/17/ground_gait/mocap_7.csv'];
+path_data=['../data/25/ground_gait/mocap_1.csv'];
 
 fs_mocap=100;
 
