@@ -1,0 +1,228 @@
+clear all;
+close all;
+
+path='..'; % path of the MovePort dataset on your device
+
+postures={'still','back','forward','halfsquat'};
+n_class=length(postures);
+
+model='lda'; % select 'linear' or 'lda'
+
+Q=0;
+
+window_length=50; % window length: 100 ms
+window_step=50; % window sliding step: 50 ms
+
+fs=2000; % sampling rate (after resampling)
+
+fs_emg=2000;
+fs_imu=100;
+fs_ips=60;
+fs_mocap=100;
+
+train=0.7;
+
+for i=1:25 % subjects 1 to 25
+    i
+    feature_emg=[];
+    feature_ips=[];
+    feature_imu=[];
+    feature_mocap=[];
+    label_all=[];
+    for j=1:length(postures)
+        folder=[path,'/data/',num2str(i),'/',postures{1,j}];
+        files=dir(folder);
+        files = files(~endsWith({files.name},{'.avi'}));
+        
+        segment_name={};
+        for k=3:length(files)
+            filename=files(k).name;
+            idx_str=strfind(filename,'_');
+            segment_name{k-2,1}=filename(idx_str+1:end);
+        end
+        segment_name = segment_name(~cellfun(@isempty, segment_name));
+        segment_name=unique(cell2mat(segment_name),'rows');
+
+        for k=1:size(segment_name,1)
+            emg=readmatrix([folder,'/emg_',segment_name(k,:)]);
+            emg=emg(2:end,2:end);
+            feature_emg_sample=feature_extraction_emg(emg,window_length,window_step,fs);
+            feature_emg=[feature_emg,{feature_emg_sample}];
+            label_sample=j*ones(size(feature_emg_sample,1),1);
+            label_all=[label_all,{label_sample}];
+    
+            ips=readmatrix([folder,'/ips_',segment_name(k,:)]);
+            ips=ips(2:end,2:end);
+            ips = resample(ips',size(emg,2),size(ips,2))';
+            ips2d=reshape(ips,[11,size(ips,1)/11/2,2,size(ips,2)]);
+            feature_ips_sample=feature_extraction_mean(ips,window_length,window_step,fs);
+            feature_ips=[feature_ips,{feature_ips_sample}];
+    
+            mocap=readtable([folder,'/mocap_',segment_name(k,:)]);
+            sensors=mocap(2:end,1);
+            sensor_ref='IJ';
+            mocap=readmatrix([folder,'/mocap_',segment_name(k,:)]);
+            mocap=mocap(2:end,2:end);
+            mocap = resample(mocap',size(emg,2),size(mocap,2))';
+            feature_mocap_sample=feature_extraction_diff(mocap,window_length,window_step,fs);
+            mocap_transform=mocap_ref(mocap,sensors,sensor_ref);
+            feature_mocap_sample2=feature_extraction_mean(mocap_transform,window_length,window_step,fs);     
+    %         feature_mocap=[feature_mocap,{feature_mocap_sample}];
+            feature_mocap=[feature_mocap,{[feature_mocap_sample,feature_mocap_sample2]}];
+    
+            imu=readmatrix([folder,'/imu_',segment_name(k,:)]);
+            imu=imu(2:end,2:end);
+            imu = resample(imu',size(emg,2),size(imu,2))';
+            feature_imu_sample=feature_extraction_diff(imu,window_length,window_step,fs);
+            feature_imu=[feature_imu,{feature_imu_sample}];
+        end
+    end
+
+    [feature_emg,label,~]=data_prepare(feature_emg,label_all,Q);
+    [feature_ips,~,~]=data_prepare(feature_ips,label_all,Q);
+    [feature_imu,~,~]=data_prepare(feature_imu,label_all,Q);
+    [feature_mocap,~,~]=data_prepare(feature_mocap,label_all,Q);
+
+    N=length(label);
+    idx_all=randperm(N);
+    idx_train=idx_all(1:round(N*train));
+    idx_test=idx_all(round(N*train)+1:N);
+    label_train=label(idx_train);
+    label_test=label(idx_test);
+
+
+    feature_train_emg=feature_emg(idx_train,:);
+    feature_test_emg=feature_emg(idx_test,:);
+    feature_train_ips=feature_ips(idx_train,:);
+    feature_test_ips=feature_ips(idx_test,:);
+    feature_train_imu=feature_imu(idx_train,:);
+    feature_test_imu=feature_imu(idx_test,:);
+    feature_train_mocap=feature_mocap(idx_train,:);
+    feature_test_mocap=feature_mocap(idx_test,:);
+
+
+    idx=find(std(feature_train_emg)<1e-10);
+    feature_train_emg(:,idx)=[];
+    feature_test_emg(:,idx)=[];
+    idx=find(std(feature_train_ips)<1e-10);
+    feature_train_ips(:,idx)=[];
+    feature_test_ips(:,idx)=[];
+    idx=find(std(feature_train_imu)<1e-10);
+    feature_train_imu(:,idx)=[];
+    feature_test_imu(:,idx)=[];
+    idx=find(std(feature_train_mocap)<1e-10);
+    feature_train_mocap(:,idx)=[];
+    feature_test_mocap(:,idx)=[];
+
+    idx=find(std(feature_test_emg)<1e-10);
+    feature_train_emg(:,idx)=[];
+    feature_test_emg(:,idx)=[];
+    idx=find(std(feature_test_ips)<1e-10);
+    feature_train_ips(:,idx)=[];
+    feature_test_ips(:,idx)=[];
+    idx=find(std(feature_test_imu)<1e-10);
+    feature_train_imu(:,idx)=[];
+    feature_test_imu(:,idx)=[];
+    idx=find(std(feature_test_mocap)<1e-10);
+    feature_train_mocap(:,idx)=[];
+    feature_test_mocap(:,idx)=[];
+
+    [feature_train_emg,feature_test_emg]=feature_normalize(feature_train_emg,feature_test_emg);
+    [feature_train_ips,feature_test_ips]=feature_normalize(feature_train_ips,feature_test_ips);
+    [feature_train_imu,feature_test_imu]=feature_normalize(feature_train_imu,feature_test_imu);
+    [feature_train_mocap,feature_test_mocap]=feature_normalize(feature_train_mocap,feature_test_mocap);
+
+    feature_train_emg_mocap=[feature_train_emg,feature_train_mocap];
+    feature_test_emg_mocap=[feature_test_emg,feature_test_mocap];
+    feature_train_emg_ips=[feature_train_emg,feature_train_ips];
+    feature_test_emg_ips=[feature_test_emg,feature_test_ips];
+    feature_train_emg_imu=[feature_train_emg,feature_train_imu];
+    feature_test_emg_imu=[feature_test_emg,feature_test_imu];
+    feature_train_mocap_ips=[feature_train_mocap,feature_train_ips];
+    feature_test_mocap_ips=[feature_test_mocap,feature_test_ips];
+    feature_train_mocap_imu=[feature_train_mocap,feature_train_imu];
+    feature_test_mocap_imu=[feature_test_mocap,feature_test_imu];
+    feature_train_ips_imu=[feature_train_ips,feature_train_imu];
+    feature_test_ips_imu=[feature_test_ips,feature_test_imu];
+    
+    
+    switch model
+        case 'lda'
+            mdl_emg = fitcdiscr(feature_train_emg,label_train,'discrimType','pseudolinear');
+            mdl_ips = fitcdiscr(feature_train_ips,label_train,'discrimType','pseudolinear');
+            mdl_imu = fitcdiscr(feature_train_imu,label_train,'discrimType','pseudolinear');
+            mdl_mocap = fitcdiscr(feature_train_mocap,label_train,'discrimType','pseudolinear');  
+            mdl_emg_ips = fitcdiscr(feature_train_emg_ips,label_train,'discrimType','pseudolinear');  
+            mdl_emg_imu = fitcdiscr(feature_train_emg_imu,label_train,'discrimType','pseudolinear');  
+            mdl_emg_mocap = fitcdiscr(feature_train_emg_mocap,label_train,'discrimType','pseudolinear');  
+            mdl_mocap_ips = fitcdiscr(feature_train_mocap_ips,label_train,'discrimType','pseudolinear');  
+            mdl_mocap_imu = fitcdiscr(feature_train_mocap_imu,label_train,'discrimType','pseudolinear');
+            mdl_ips_imu = fitcdiscr(feature_train_ips_imu,label_train,'discrimType','pseudolinear');  
+        case 'linear'
+            t = templateLinear;
+            mdl_emg = fitcecoc(feature_train_emg,label_train,'Learners',t);
+            mdl_ips = fitcecoc(feature_train_ips,label_train,'Learners',t);
+            mdl_imu = fitcecoc(feature_train_imu,label_train,'Learners',t);
+            mdl_mocap = fitcecoc(feature_train_mocap,label_train,'Learners',t);
+            mdl_emg_ips = fitcecoc(feature_train_emg_ips,label_train,'Learners',t);  
+            mdl_emg_imu = fitcecoc(feature_train_emg_imu,label_train,'Learners',t);  
+            mdl_emg_mocap = fitcecoc(feature_train_emg_mocap,label_train,'Learners',t); 
+            mdl_mocap_ips = fitcecoc(feature_train_mocap_ips,label_train,'Learners',t);  
+            mdl_mocap_imu = fitcecoc(feature_train_mocap_imu,label_train,'Learners',t);  
+            mdl_ips_imu = fitcecoc(feature_train_ips_imu,label_train,'Learners',t);   
+        otherwise
+    end
+
+    label_predict_emg=predict(mdl_emg,feature_test_emg);
+    acc_emg(i)=mean(label_predict_emg==label_test);
+    mean(acc_emg)
+    
+    label_predict_ips=predict(mdl_ips,feature_test_ips);
+    acc_ips(i)=mean(label_predict_ips==label_test);
+    mean(acc_ips)
+
+    label_predict_imu=predict(mdl_imu,feature_test_imu);
+    acc_imu(i)=mean(label_predict_imu==label_test);
+    mean(acc_imu)
+
+    label_predict_mocap=predict(mdl_mocap,feature_test_mocap);
+    acc_mocap(i)=mean(label_predict_mocap==label_test);
+    mean(acc_mocap)
+
+    label_predict_emg_ips=predict(mdl_emg_ips,feature_test_emg_ips);
+    acc_emg_ips(i)=mean(label_predict_emg_ips==label_test);
+    mean(acc_emg_ips)
+
+    label_predict_emg_imu=predict(mdl_emg_imu,feature_test_emg_imu);
+    acc_emg_imu(i)=mean(label_predict_emg_imu==label_test);
+    mean(acc_emg_imu)
+
+    label_predict_emg_mocap=predict(mdl_emg_mocap,feature_test_emg_mocap);
+    acc_emg_mocap(i)=mean(label_predict_emg_mocap==label_test);
+    mean(acc_emg_mocap)
+
+    label_predict_mocap_ips=predict(mdl_mocap_ips,feature_test_mocap_ips);
+    acc_mocap_ips(i)=mean(label_predict_mocap_ips==label_test);
+    mean(acc_mocap_ips)
+
+    label_predict_mocap_imu=predict(mdl_mocap_imu,feature_test_mocap_imu);
+    acc_mocap_imu(i)=mean(label_predict_mocap_imu==label_test);
+    mean(acc_mocap_imu)
+
+    label_predict_ips_imu=predict(mdl_ips_imu,feature_test_ips_imu);
+    acc_ips_imu(i)=mean(label_predict_ips_imu==label_test);
+    mean(acc_ips_imu)
+
+
+%     save([path,'/results/accuracy_emg_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_emg');
+%     save([path,'/results/accuracy_ips_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_ips');
+%     save([path,'/results/accuracy_imu_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_imu');
+%     save([path,'/results/accuracy_mocap_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_mocap');
+%     save([path,'/results/accuracy_emg_ips_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_emg_ips');
+%     save([path,'/results/accuracy_emg_imu_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_emg_imu');
+%     save([path,'/results/accuracy_emg_mocap_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_emg_mocap');
+%     save([path,'/results/accuracy_mocap_ips_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_mocap_ips');
+%     save([path,'/results/accuracy_mocap_imu_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_mocap_imu');
+%     save([path,'/results/accuracy_ips_imu_posture_',num2str(n_class),'_class_',model,'.mat'],'acc_ips_imu');
+
+end
